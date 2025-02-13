@@ -20,8 +20,8 @@ class HackRFSweeper:
     
     def run(self):
         while not self.stop_event.is_set():
-            self._impl.parseSweeps()
-        self._impl.stopProcess()
+            self._impl.parse_sweeps()
+        self._impl.stop_process()
 
     def stop(self):
         self.stop_event.set()
@@ -35,9 +35,9 @@ class _HackRFSweeperImpl:
         self.process_died_signal = Signal()
         self.current_ranges_mhz = (2400, 2480)
         self.process = None
-        self._initProcess()
+        self._init_process()
         
-    def parseSweeps(self):
+    def parse_sweeps(self):
         for line in self.process.stdout:
             line = line.strip()
             if "," in line:
@@ -62,7 +62,7 @@ class _HackRFSweeperImpl:
                         logger.error(f"Ошибка преобразования чисел: {ve}")
                         continue
                     
-    def stopProcess(self):
+    def stop_process(self):
         try:
             if self.process:
                 self.process.terminate()
@@ -71,7 +71,7 @@ class _HackRFSweeperImpl:
         except Exception as e:
                 logger.error(f"Ошибка при завершении процесса hackrf_sweep: {e}")
 
-    def _initProcess(self):
+    def _init_process(self):
         logger.info("Starting hackrf_sweep proccess")
         command = ["hackrf_sweep", "-f", f"{int(self.current_ranges_mhz[0])}:{int(self.current_ranges_mhz[1])}"]
         try:
