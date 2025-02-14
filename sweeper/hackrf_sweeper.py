@@ -2,65 +2,94 @@ from utils.logger import logger
 import threading
 from blinker import Signal
 import subprocess
+from PyQt5.QtCore import QThread, pyqtSignal, QMetaObject, QObject, Qt, pyqtSlot
 
 ########### PUBLIC ###########
 
-class HackRFSweeper:
-    def __init__(self):
-        self.data_ready_signal = Signal()
-        self.error_signal = Signal()
-        self.stop_event = threading.Event()
-
-        self._impl = _HackRFSweeperImpl()
-        self._impl.data_ready_signal.connect(lambda sweep: self.data_ready_signal.send(sweep), weak=False)
-        self._impl.process_died_signal.connect(lambda: self.error_signal.send("HackRF Process died"), weak=False)
-
-        self.thread = threading.Thread(target=self.run)
-        self.thread.start()
+class HackRFSweeper(QObject):
+    data_ready_signal = pyqtSignal(object)
+    _stop_signal      = pyqtSignal()
+    sweeper_stopped_signal = pyqtSignal()
     
-    def run(self):
-        while not self.stop_event.is_set():
-            self._impl.parse_sweeps()
-        self._impl.stop_process()
+    def __init__(self):
+        super().__init__()
+        self._impl = _HackRFSweeperImpl()
+        self._impl.data_ready_signal.connect(self.data_ready_signal)
+        self._impl.stop_signal.connect(self.sweeper_stopped_signal)
+        self.thread = QThread()
+        self.thread.start()
+        self._impl.moveToThread(self.thread)
+    
+    def start(self):
+        QMetaObject.invokeMethod(
+            self._impl, 
+            "init",  
+            Qt.ConnectionType.QueuedConnection, 
+        )
+        QMetaObject.invokeMethod(
+            self._impl, 
+            "parse_sweeps",
+            Qt.ConnectionType.QueuedConnection,
+        )
 
     def stop(self):
-        self.stop_event.set()
-        self.thread.join()
+        self._stop_signal.emit()
+        self.thread.wait()
 
 ########### PRIVATE ###########
 
-class _HackRFSweeperImpl:
+class _HackRFSweeperImpl(QObject):
+    data_ready_signal = pyqtSignal(object)
+    stop_signal       = pyqtSignal()
+    
     def __init__(self):
-        self.data_ready_signal = Signal()
+        self.i = 0
+        super().__init__()
         self.process_died_signal = Signal()
         self.current_ranges_mhz = (2400, 2480)
         self.process = None
-        self._init_process()
-        
-    def parse_sweeps(self):
-        for line in self.process.stdout:
-            line = line.strip()
-            if "," in line:
-                # Разделяем строку на части
-                fields = line.split(", ")
-                if len(fields) > 6:  # Проверяем наличие необходимого количества полей
-                    date_time = fields[0] + fields[1]
-                    hz_low = fields[2].replace(',', '')  # Удаление запятых
-                    hz_high = fields[3].replace(',', '')  # Удаление запятых
-                    hz_bin_width = fields[4].replace(',', '')  # Удаление запятых
-                    # Удаление запятых из каждого элемента dbs
-                    dbs = [field.replace(',', '') for field in fields[6:]]
-                    try:
-                        # Преобразование строк в числа
-                        hz_low_val = int(float(hz_low))
-                        hz_high_val = int(float(hz_high))
-                        hz_bin_width_val = float(hz_bin_width)
-                        dbs_val = [float(db) for db in dbs]
+        self._current_buffer = []
+        logger.info("init _HackRFSweeperImpl")  
 
-                        self.data_ready_signal.send((date_time, hz_low_val, hz_high_val, hz_bin_width_val, dbs_val))
-                    except ValueError as ve:
-                        logger.error(f"Ошибка преобразования чисел: {ve}")
-                        continue
+    @pyqtSlot()
+    def init(self):
+        logger.info("init _HackRFSweeperImpl")
+        self._init_process()
+    
+    @pyqtSlot()
+    def parse_sweeps(self):
+        
+        while self.i < 1:
+            self.i += 1
+            for line in self.process.stdout:
+                line = line.strip()
+                if "," in line:
+                    # Разделяем строку на части
+                    fields = line.split(", ")
+                    if len(fields) > 6:  # Проверяем наличие необходимого количества полей
+                        date_time = fields[0] + fields[1]
+                        hz_low = fields[2].replace(',', '')  # Удаление запятых
+                        hz_high = fields[3].replace(',', '')  # Удаление запятых
+                        hz_bin_width = fields[4].replace(',', '')  # Удаление запятых
+                        # Удаление запятых из каждого элемента dbs
+                        dbs = [field.replace(',', '') for field in fields[6:]]
+                        try:
+                            # Преобразование строк в числа
+                            hz_low_val = int(float(hz_low))
+                            hz_high_val = int(float(hz_high))
+                            hz_bin_width_val = float(hz_bin_width)
+                            dbs_val = [float(db) for db in dbs]
+                        except ValueError as ve:
+                            logger.error(f"Ошибка преобразования чисел: {ve}")
+                            continue
+
+                        if hz_low_val == int(self.current_ranges_mhz[0]) * 1e6 and len(self._current_buffer) > 0:
+                            self.data_ready_signal.emit(self._current_buffer)                                
+                            self._current_buffer = []
+                            break
+                        self._current_buffer.append((date_time, hz_low_val, hz_high_val, hz_bin_width_val, dbs_val))
+        self.stop_signal.emit()
+
                     
     def stop_process(self):
         try:
