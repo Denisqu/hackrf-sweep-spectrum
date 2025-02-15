@@ -84,9 +84,9 @@ class _HackRFSweeperImpl(QObject):
                             continue
 
                         if hz_low_val == int(self.current_ranges_mhz[0]) * 1e6 and len(self._current_buffer) > 0:
-                            logger.info(f'started emitting data_ready_signal from thread {QThread.currentThread()}')
+                            logger.info(f'started emitting data_ready_signal from thread {int(QThread.currentThread().currentThreadId())}')
                             self.data_ready_signal.emit(self._current_buffer)
-                            logger.info(f'ended emitting data_ready_signal from thread {QThread.currentThread()}')                                
+                            logger.info(f'ended emitting data_ready_signal from thread {int(QThread.currentThread().currentThreadId())}')                                
                             self._current_buffer = []
                         self._current_buffer.append((date_time, hz_low_val, hz_high_val, hz_bin_width_val, dbs_val))
         self.stop_signal.emit()

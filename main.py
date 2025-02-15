@@ -131,7 +131,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPu
 #         QMessageBox.information(self, "Task Complete", "The spectrogram has been generated!")
 
 def main():
-    logger.error("test")
+    logger.info(f'Starting application in thread {int(QThread.currentThread().currentThreadId())}')
     app = QApplication(sys.argv)
     sweeper = HackRFSweeper()
     sweeper.sweeper_stopped_signal.connect(lambda: QApplication.instance().quit())
