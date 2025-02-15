@@ -83,23 +83,22 @@ class SpectrogramWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.addWidget(self.canvas)
         self.colorbar = None
+        self.plot_data_buffer = []
 
         self.worker_thread = QThread()
         self.worker_thread.setObjectName("SpectrogramWorkerThread")
         self.worker = SpectrogramWorker()
-        self.worker.moveToThread(self.worker_thread)
-
         self.worker.plot_ready.connect(self.update_plot)
 
+        self.worker.moveToThread(self.worker_thread)
         self.worker_thread.start()
 
         self.timer = QTimer(self)
-        self.timer.setInterval(33)  # 33 мс ≈ 30 кадров в секунду
+        self.timer.setInterval(500)  # 33 мс ≈ 30 кадров в секунду
         self.timer.timeout.connect(self._on_timer_timeout)
         self.timer.start()
 
-        # Буфер для накопления данных
-        self.plot_data_buffer = []
+        
 
     @pyqtSlot(object)
     def handle_data_ready(self, buffer):
@@ -113,19 +112,16 @@ class SpectrogramWidget(QWidget):
         if self.plot_data_buffer:
             X, Y, data, freq_edges = self.plot_data_buffer[-1]
             self.plot_data_buffer.clear()  # Очищаем буфер
-
             self.axes.clear()
             mesh = self.axes.pcolormesh(X, Y, data, shading='auto', cmap='inferno', rasterized=True, vmin=-70, vmax=0)
             if self.colorbar is None:
                 self.colorbar = self.figure.colorbar(mesh, ax=self.axes)
             else:
                 self.colorbar.update_normal(mesh)
-
             self.axes.set_xlabel('Frequency (MHz)')
             self.axes.set_ylabel('Time (samples)')
             # Инвертируем ось Y, чтобы время шло сверху вниз
             self.axes.invert_yaxis()
-
             self.canvas.draw()
 
 class MainWindow(QMainWindow):
