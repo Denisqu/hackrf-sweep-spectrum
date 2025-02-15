@@ -4,7 +4,7 @@ import datetime
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
-    QCheckBox, QPushButton, QLabel, QFileDialog, QSizePolicy, QSlider
+    QCheckBox, QPushButton, QLabel, QFileDialog, QSizePolicy, QSlider, QLineEdit
 )
 from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer, Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -22,11 +22,15 @@ class SpectrogramWorker(QObject):
         super().__init__()
         self.current_frequencies = None
         self.history_data = []
-        self.max_history = 500
+        self.max_history = 250
 
-        # Параметры добавления шума
+        # Параметры для добавления шума по всему спектру
         self.add_noise = False
-        self.noise_db = -10  # уровень шума (будет использоваться как стандартное отклонение в дБ)
+        self.noise_db = -10  # уровень шума (используется как параметр для генерации Гауссова шума)
+
+        # Параметры фильтрации
+        self.use_filters = False
+        self.filter_specs = []  # список кортежей (min_freq, max_freq) в МГц
 
         self.process_requested.connect(self.process_data)
 
@@ -35,18 +39,29 @@ class SpectrogramWorker(QObject):
         try:
             # Обработка и подготовка данных
             all_frequencies, all_dbs = self._process_buffer(buffer)
-            self._update_history(all_frequencies, all_dbs)
+            self._update_history(all_frequencies, dbs=all_dbs)
 
             # Подготовка данных для отрисовки
             if self.history_data:
                 data_array = np.array(self.history_data)  # shape: (time, freq)
                 data_array = data_array[::-1, :]  # новые данные сверху
+                # Переводим частоты в МГц
                 freqs_mhz = self.current_frequencies / 1e6
 
-                # Применяем гауссов шум, если он включен
+                # Применяем фильтрацию по заданным диапазонам
+                if self.use_filters and self.filter_specs:
+                    for (min_freq, max_freq) in self.filter_specs:
+                        # Находим индексы частот, попадающие в диапазон (в МГц)
+                        indices = np.where((freqs_mhz >= min_freq) & (freqs_mhz <= max_freq))[0]
+                        if indices.size > 0:
+                            # Генерируем гауссов шум с центром -67.5 дБ и std=1, затем обрезаем значения в диапазоне [-70, -65]
+                            filtered_noise = np.random.normal(-68, 3.0, size=(data_array.shape[0], len(indices)))
+                            data_array[:, indices] = filtered_noise
+
+                # Применяем глобальный гауссов шум, если он включён
                 if self.add_noise:
-                    noise_std = self.noise_db  # интерпретируем значение слайдера как стандартное отклонение в дБ
-                    noise = np.random.normal(noise_std, 5, size=data_array.shape)
+                    # Здесь noise_db интерпретируется как среднее значение шума, а стандартное отклонение фиксировано (например, 5)
+                    noise = np.random.normal(self.noise_db, 5, size=data_array.shape)
                     data_array = data_array + noise
 
                 # Сортировка по возрастанию частот
@@ -93,6 +108,36 @@ class SpectrogramWorker(QObject):
         self.add_noise = add_noise
         self.noise_db = noise_db
         logger.info(f"Параметры шума обновлены: add_noise={add_noise}, noise_db={noise_db} дБ")
+
+    @pyqtSlot(bool, str)
+    def set_filter_params(self, use_filters, filter_str):
+        """
+        Обновление параметров фильтрации.
+        :param use_filters: флаг использования фильтров
+        :param filter_str: строка с диапазонами в формате "[min_freq0:max_freq0],[min_freq1:max_freq1]..."
+                           Значения частот указываются в МГц.
+        """
+        self.use_filters = use_filters
+        self.filter_specs = []
+        filter_str = filter_str.strip()
+        if filter_str:
+            try:
+                # Если строка начинается и заканчивается квадратными скобками, убираем их
+                if filter_str.startswith("[") and filter_str.endswith("]"):
+                    filter_str = filter_str[1:-1]
+                # Разбиваем по разделителю "],["
+                filters = filter_str.split("],[")
+                for f in filters:
+                    parts = f.split(":")
+                    if len(parts) == 2:
+                        min_freq = float(parts[0])
+                        max_freq = float(parts[1])
+                        self.filter_specs.append((min_freq, max_freq))
+                logger.info(f"Обновлены диапазоны фильтрации: {self.filter_specs}")
+            except Exception as e:
+                logger.error(f"Ошибка при парсинге фильтров: {e}")
+        else:
+            logger.info("Диапазоны фильтрации не заданы (пустая строка).")
 
 
 class SpectrogramWidget(QWidget):
@@ -172,8 +217,9 @@ class SpectrogramWidget(QWidget):
 
 
 class ControlsWidget(QWidget):
-    # Сигнал, который передаёт параметры шума: (флаг, уровень шума в дБ)
+    # Сигналы для передачи параметров шума и фильтрации
     noise_params_changed = pyqtSignal(bool, float)
+    filter_params_changed = pyqtSignal(bool, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -196,6 +242,11 @@ class ControlsWidget(QWidget):
         self.noise_slider.setValue(10)  # значение по умолчанию: 10 дБ
         self.noise_value_label = QLabel("10 дБ")
 
+        # Новые элементы для фильтрации
+        self.filter_checkbox = QCheckBox("Использовать фильтры")
+        self.filter_lineedit = QLineEdit()
+        self.filter_lineedit.setPlaceholderText("[min_freq0:max_freq0],[min_freq1:max_freq1]")
+
         # Локальные переменные для логики записи
         self.recording = False
         self.record_count = 0
@@ -209,10 +260,13 @@ class ControlsWidget(QWidget):
         layout.addWidget(self.choose_record_folder_button)
         layout.addWidget(self.recording_count_label)
         layout.addWidget(self.toggle_recording_button)
-        # Добавляем новые элементы для шума
+        # Элементы для шума
         layout.addWidget(self.noise_checkbox)
         layout.addWidget(self.noise_slider)
         layout.addWidget(self.noise_value_label)
+        # Элементы для фильтров
+        layout.addWidget(self.filter_checkbox)
+        layout.addWidget(self.filter_lineedit)
         self.setLayout(layout)
 
         # Подключение сигналов для исключительного выбора основных чекбоксов
@@ -227,6 +281,10 @@ class ControlsWidget(QWidget):
         # Подключение сигналов для управления шумом
         self.noise_checkbox.toggled.connect(self.on_noise_params_changed)
         self.noise_slider.valueChanged.connect(self.on_noise_slider_changed)
+
+        # Подключение сигналов для фильтров
+        self.filter_checkbox.toggled.connect(self.on_filter_params_changed)
+        self.filter_lineedit.textChanged.connect(self.on_filter_params_changed)
 
     def on_hackrf_toggled(self, checked):
         if checked and self.recorded_signal_checkbox.isChecked():
@@ -268,11 +326,17 @@ class ControlsWidget(QWidget):
         self.emit_noise_params_changed()
 
     def on_noise_params_changed(self, checked=None):
-        # Если аргумент не передан (например, при изменении слайдера), берем текущее состояние чекбокса
+        # Если аргумент не передан (например, при изменении слайдера), берём текущее состояние чекбокса
         self.emit_noise_params_changed()
 
     def emit_noise_params_changed(self):
         self.noise_params_changed.emit(self.noise_checkbox.isChecked(), float(self.noise_slider.value()))
+
+    def on_filter_params_changed(self, checked=None):
+        self.emit_filter_params_changed()
+
+    def emit_filter_params_changed(self):
+        self.filter_params_changed.emit(self.filter_checkbox.isChecked(), self.filter_lineedit.text())
 
 
 class MainWindow(QMainWindow):
@@ -296,8 +360,9 @@ class MainWindow(QMainWindow):
         self.sweeper.data_ready_signal.connect(self.spectrogram_widget.worker.process_requested)
         self.sweeper.start()
 
-        # Соединяем сигнал изменения параметров шума с методом обновления в рабочем объекте
+        # Соединяем сигналы изменения параметров шума и фильтров с методами обновления в рабочем объекте
         self.controls_widget.noise_params_changed.connect(self.spectrogram_widget.worker.set_noise_params)
+        self.controls_widget.filter_params_changed.connect(self.spectrogram_widget.worker.set_filter_params)
 
     def closeEvent(self, event):
         self.sweeper.stop()
