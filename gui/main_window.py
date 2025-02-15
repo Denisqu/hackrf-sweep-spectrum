@@ -3,7 +3,7 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject
+from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer
 
 from utils.logger import logger
 
@@ -84,18 +84,27 @@ class SpectrogramWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.addWidget(self.canvas)
         self.colorbar = None
-        
+
         # Инициализация потока
         self.worker_thread = QThread()
-        self.worker_thread.setObjectName = "SpectrogramWorkerThread"
+        self.worker_thread.setObjectName("SpectrogramWorkerThread")
         self.worker = SpectrogramWorker()
         self.worker.moveToThread(self.worker_thread)
-        
+
         # Подключаем сигнал plot_ready к слоту update_plot
         self.worker.plot_ready.connect(self.update_plot)
-        
+
         # Запускаем поток
         self.worker_thread.start()
+
+        # Таймер для ограничения частоты обновлений
+        self.timer = QTimer(self)
+        self.timer.setInterval(33)  # 33 мс ≈ 30 раз в секунду
+        self.timer.timeout.connect(self._on_timer_timeout)
+        self.timer.start()
+
+        # Буфер для накопления данных
+        self.plot_data_buffer = []
 
     @pyqtSlot(object)
     def handle_data_ready(self, buffer):
@@ -103,26 +112,27 @@ class SpectrogramWidget(QWidget):
 
     @pyqtSlot(np.ndarray, np.ndarray, np.ndarray, np.ndarray)
     def update_plot(self, X, Y, data, freq_edges):
-        
-        logger.info(f'update_plot in thread {int(QThread.currentThread().currentThreadId())}')
-        self.axes.clear()
-        # Только отрисовка подготовленных данных
-        mesh = self.axes.pcolormesh(X, Y, data, shading='auto', cmap='inferno', rasterized=True, vmin=-60, vmax=0)
-        # Обновление цветовой шкалы
-        if self.colorbar is None:
-            self.colorbar = self.figure.colorbar(mesh, ax=self.axes)
-        # else:
-        #     self.colorbar.update_normal(mesh)
-            
-        self.axes.set_xlabel('Time (samples)')
-        self.axes.set_ylabel('Frequency (MHz)')
-        self.canvas.draw()
+        # Накопление данных в буфере
+        self.plot_data_buffer.append((X, Y, data, freq_edges))
 
+    def _on_timer_timeout(self):
+        # Если в буфере есть данные, обрабатываем их
+        if self.plot_data_buffer:
+            # Берем последние данные из буфера
+            X, Y, data, freq_edges = self.plot_data_buffer[-1]
+            self.plot_data_buffer.clear()  # Очищаем буфер
 
-    def closeEvent(self, event):
-        self.worker_thread.quit()
-        self.worker_thread.wait()
-        super().closeEvent(event)
+            # Отрисовка данных
+            self.axes.clear()
+            mesh = self.axes.pcolormesh(X, Y, data, shading='auto', cmap='inferno', rasterized=True, vmin=-60, vmax=0)
+            if self.colorbar is None:
+                self.colorbar = self.figure.colorbar(mesh, ax=self.axes)
+            else:
+                self.colorbar.update_normal(mesh)
+
+            self.axes.set_xlabel('Time (samples)')
+            self.axes.set_ylabel('Frequency (MHz)')
+            self.canvas.draw()
 
 class MainWindow(QMainWindow):
     def __init__(self, sweeper):
