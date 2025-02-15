@@ -6,6 +6,7 @@ from matplotlib.figure import Figure
 from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer
 
 from utils.logger import logger
+from sweeper.hackrf_sweeper import HackRFSweeper
 
 class SpectrogramWorker(QObject):
     plot_ready = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # X, Y, data, freq_edges
@@ -21,7 +22,6 @@ class SpectrogramWorker(QObject):
 
     @pyqtSlot(object)
     def process_data(self, buffer):
-        logger.info(f'Processing data in thread {int(QThread.currentThread().currentThreadId())}')
         try:
             # Обработка и подготовка данных
             all_frequencies, all_dbs = self._process_buffer(buffer)
@@ -129,11 +129,15 @@ class SpectrogramWidget(QWidget):
             self.canvas.draw()
 
 class MainWindow(QMainWindow):
-    def __init__(self, sweeper):
+    def __init__(self):
         super().__init__()
+        self.sweeper = HackRFSweeper()
+        self.sweeper.sweeper_stopped_signal.connect(lambda: QApplication.instance().quit())
         self.spectrogram_widget = SpectrogramWidget()
         self.setCentralWidget(self.spectrogram_widget)
-        sweeper.data_ready_signal.connect(self.spectrogram_widget.worker.process_requested)
+        self.sweeper.data_ready_signal.connect(self.spectrogram_widget.worker.process_requested)
+        self.sweeper.start()
 
     def closeEvent(self, event):
+        self.sweeper.stop()
         event.accept()
