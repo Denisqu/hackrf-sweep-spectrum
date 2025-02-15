@@ -51,7 +51,6 @@ class _HackRFSweeperImpl(QObject):
         self.current_ranges_mhz = (2400, 2480)
         self.process = None
         self._current_buffer = []
-        logger.info("init _HackRFSweeperImpl")  
 
     @pyqtSlot()
     def init(self):
@@ -84,9 +83,7 @@ class _HackRFSweeperImpl(QObject):
                             continue
 
                         if hz_low_val == int(self.current_ranges_mhz[0]) * 1e6 and len(self._current_buffer) > 0:
-                            logger.info(f'started emitting data_ready_signal from thread {int(QThread.currentThread().currentThreadId())}')
                             self.data_ready_signal.emit(self._current_buffer)
-                            logger.info(f'ended emitting data_ready_signal from thread {int(QThread.currentThread().currentThreadId())}')                                
                             self._current_buffer = []
                         self._current_buffer.append((date_time, hz_low_val, hz_high_val, hz_bin_width_val, dbs_val))
         self.stop_signal.emit()
@@ -103,7 +100,7 @@ class _HackRFSweeperImpl(QObject):
 
     def _init_process(self):
         logger.info("Starting hackrf_sweep proccess")
-        command = ["hackrf_sweep", "-f", f"{int(self.current_ranges_mhz[0])}:{int(self.current_ranges_mhz[1])}"]
+        command = ["hackrf_sweep", "-f", f"{int(self.current_ranges_mhz[0])}:{int(self.current_ranges_mhz[1])}", "-w", "100000"]
         try:
             # Запуск процесса
             self.process = subprocess.Popen(

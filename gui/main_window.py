@@ -8,11 +8,8 @@ from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer
 from utils.logger import logger
 
 class SpectrogramWorker(QObject):
-    # Сигнал для передачи подготовленных данных в основной поток
     plot_ready = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # X, Y, data, freq_edges
-    
-    # Сигнал для запуска обработки данных (входной сигнал)
-    process_requested = pyqtSignal(object)  # buffer
+    process_requested = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -20,7 +17,6 @@ class SpectrogramWorker(QObject):
         self.history_data = []
         self.max_history = 500
 
-        # Подключаем сигнал process_requested к слоту process_data
         self.process_requested.connect(self.process_data)
 
     @pyqtSlot(object)
@@ -33,23 +29,26 @@ class SpectrogramWorker(QObject):
             
             # Подготовка данных для отрисовки
             if self.history_data:
-                data_array = np.array(self.history_data).T
+                # Оставляем данные в виде (время, частоты)
+                data_array = np.array(self.history_data)  # shape: (time, freq)
+                # Переворачиваем массив по оси времени, чтобы новые данные были сверху
+                data_array = data_array[::-1, :]
                 freqs_mhz = self.current_frequencies / 1e6
                 
-                # Сортировка частот
+                # Сортируем частоты (ось 1) по возрастанию
                 sorted_indices = np.argsort(freqs_mhz)
                 freqs_mhz = freqs_mhz[sorted_indices]
-                data_array = data_array[sorted_indices, :]
+                data_array = data_array[:, sorted_indices]
                 
-                # Расчет сетки
-                time_edges = np.arange(data_array.shape[1] + 1)
+                # Расчет сетки: X - частоты, Y - время
+                time_edges = np.arange(data_array.shape[0] + 1)
                 freq_edges = np.interp(
                     np.arange(len(freqs_mhz) + 1),
                     np.arange(len(freqs_mhz)),
                     freqs_mhz
                 )
                 
-                X, Y = np.meshgrid(time_edges, freq_edges)
+                X, Y = np.meshgrid(freq_edges, time_edges)
                 self.plot_ready.emit(X, Y, data_array, freqs_mhz)
                 
         except Exception as e:
@@ -85,21 +84,17 @@ class SpectrogramWidget(QWidget):
         self.layout.addWidget(self.canvas)
         self.colorbar = None
 
-        # Инициализация потока
         self.worker_thread = QThread()
         self.worker_thread.setObjectName("SpectrogramWorkerThread")
         self.worker = SpectrogramWorker()
         self.worker.moveToThread(self.worker_thread)
 
-        # Подключаем сигнал plot_ready к слоту update_plot
         self.worker.plot_ready.connect(self.update_plot)
 
-        # Запускаем поток
         self.worker_thread.start()
 
-        # Таймер для ограничения частоты обновлений
         self.timer = QTimer(self)
-        self.timer.setInterval(33)  # 33 мс ≈ 30 раз в секунду
+        self.timer.setInterval(33)  # 33 мс ≈ 30 кадров в секунду
         self.timer.timeout.connect(self._on_timer_timeout)
         self.timer.start()
 
@@ -112,26 +107,25 @@ class SpectrogramWidget(QWidget):
 
     @pyqtSlot(np.ndarray, np.ndarray, np.ndarray, np.ndarray)
     def update_plot(self, X, Y, data, freq_edges):
-        # Накопление данных в буфере
         self.plot_data_buffer.append((X, Y, data, freq_edges))
 
     def _on_timer_timeout(self):
-        # Если в буфере есть данные, обрабатываем их
         if self.plot_data_buffer:
-            # Берем последние данные из буфера
             X, Y, data, freq_edges = self.plot_data_buffer[-1]
             self.plot_data_buffer.clear()  # Очищаем буфер
 
-            # Отрисовка данных
             self.axes.clear()
-            mesh = self.axes.pcolormesh(X, Y, data, shading='auto', cmap='inferno', rasterized=True, vmin=-60, vmax=0)
+            mesh = self.axes.pcolormesh(X, Y, data, shading='auto', cmap='inferno', rasterized=True, vmin=-70, vmax=0)
             if self.colorbar is None:
                 self.colorbar = self.figure.colorbar(mesh, ax=self.axes)
             else:
                 self.colorbar.update_normal(mesh)
 
-            self.axes.set_xlabel('Time (samples)')
-            self.axes.set_ylabel('Frequency (MHz)')
+            self.axes.set_xlabel('Frequency (MHz)')
+            self.axes.set_ylabel('Time (samples)')
+            # Инвертируем ось Y, чтобы время шло сверху вниз
+            self.axes.invert_yaxis()
+
             self.canvas.draw()
 
 class MainWindow(QMainWindow):
