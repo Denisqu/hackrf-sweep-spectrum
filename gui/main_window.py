@@ -4,9 +4,9 @@ import datetime
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
-    QCheckBox, QPushButton, QLabel, QFileDialog, QSizePolicy
+    QCheckBox, QPushButton, QLabel, QFileDialog, QSizePolicy, QSlider
 )
-from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer
+from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer, Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -24,6 +24,10 @@ class SpectrogramWorker(QObject):
         self.history_data = []
         self.max_history = 500
 
+        # Параметры добавления шума
+        self.add_noise = False
+        self.noise_db = -10  # уровень шума (будет использоваться как стандартное отклонение в дБ)
+
         self.process_requested.connect(self.process_data)
 
     @pyqtSlot(object)
@@ -38,6 +42,12 @@ class SpectrogramWorker(QObject):
                 data_array = np.array(self.history_data)  # shape: (time, freq)
                 data_array = data_array[::-1, :]  # новые данные сверху
                 freqs_mhz = self.current_frequencies / 1e6
+
+                # Применяем гауссов шум, если он включен
+                if self.add_noise:
+                    noise_std = self.noise_db  # интерпретируем значение слайдера как стандартное отклонение в дБ
+                    noise = np.random.normal(noise_std, 5, size=data_array.shape)
+                    data_array = data_array + noise
 
                 # Сортировка по возрастанию частот
                 sorted_indices = np.argsort(freqs_mhz)
@@ -77,6 +87,12 @@ class SpectrogramWorker(QObject):
             self.history_data.append(dbs)
             if len(self.history_data) > self.max_history:
                 self.history_data = self.history_data[-self.max_history:]
+
+    @pyqtSlot(bool, float)
+    def set_noise_params(self, add_noise, noise_db):
+        self.add_noise = add_noise
+        self.noise_db = noise_db
+        logger.info(f"Параметры шума обновлены: add_noise={add_noise}, noise_db={noise_db} дБ")
 
 
 class SpectrogramWidget(QWidget):
@@ -134,12 +150,11 @@ class SpectrogramWidget(QWidget):
 
             # Если запись включена, сохраняем только спектр (без осей и легенды)
             if self.controls_widget.recording and self.controls_widget.record_folder:
-                # Создаем временную фигуру того же размера
                 temp_fig = Figure(figsize=self.figure.get_size_inches(), dpi=self.figure.get_dpi())
                 temp_ax = temp_fig.add_axes([0, 0, 1, 1])
                 temp_ax.pcolormesh(X, Y, data, shading='auto', cmap='inferno',
                                    rasterized=True, vmin=-70, vmax=0)
-                temp_ax.set_axis_off()  # скрываем оси
+                temp_ax.set_axis_off()
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 filename = f"mesh_{timestamp}.png"
                 filepath = os.path.join(self.controls_widget.record_folder, filename)
@@ -157,25 +172,36 @@ class SpectrogramWidget(QWidget):
 
 
 class ControlsWidget(QWidget):
+    # Сигнал, который передаёт параметры шума: (флаг, уровень шума в дБ)
+    noise_params_changed = pyqtSignal(bool, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Создание элементов управления
+        # Создание основных элементов управления
         self.hackrf_checkbox = QCheckBox("Использовать HackRF")
         self.recorded_signal_checkbox = QCheckBox("Использовать записанный сигнал")
-        self.hackrf_checkbox.setChecked(True)  # по умолчанию выбран HackRF
+        self.hackrf_checkbox.setChecked(True)
 
         self.choose_recorded_folder_button = QPushButton("Выбрать папку с записанным сигналом")
         self.choose_record_folder_button = QPushButton("Выбрать папку для записи сигнала")
         self.recording_count_label = QLabel("Количество записей: 0")
         self.toggle_recording_button = QPushButton("Начать запись")
 
+        # Новые элементы для гауссового шума
+        self.noise_checkbox = QCheckBox("Добавить гауссов шум")
+        self.noise_slider = QSlider(Qt.Horizontal)
+        self.noise_slider.setMinimum(0)
+        self.noise_slider.setMaximum(50)
+        self.noise_slider.setValue(10)  # значение по умолчанию: 10 дБ
+        self.noise_value_label = QLabel("10 дБ")
+
         # Локальные переменные для логики записи
         self.recording = False
-        self.record_count = 0  # будет обновляться количеством сохранённых изображений
-        self.record_folder = None  # Путь для сохранения записей
+        self.record_count = 0
+        self.record_folder = None
 
-        # Компоновка элементов в layout
+        # Компоновка элементов управления в layout
         layout = QHBoxLayout()
         layout.addWidget(self.hackrf_checkbox)
         layout.addWidget(self.recorded_signal_checkbox)
@@ -183,9 +209,13 @@ class ControlsWidget(QWidget):
         layout.addWidget(self.choose_record_folder_button)
         layout.addWidget(self.recording_count_label)
         layout.addWidget(self.toggle_recording_button)
+        # Добавляем новые элементы для шума
+        layout.addWidget(self.noise_checkbox)
+        layout.addWidget(self.noise_slider)
+        layout.addWidget(self.noise_value_label)
         self.setLayout(layout)
 
-        # Подключение сигналов для исключительного выбора чекбоксов
+        # Подключение сигналов для исключительного выбора основных чекбоксов
         self.hackrf_checkbox.toggled.connect(self.on_hackrf_toggled)
         self.recorded_signal_checkbox.toggled.connect(self.on_recorded_toggled)
 
@@ -194,25 +224,26 @@ class ControlsWidget(QWidget):
         self.choose_record_folder_button.clicked.connect(self.select_record_folder)
         self.toggle_recording_button.clicked.connect(self.toggle_recording)
 
+        # Подключение сигналов для управления шумом
+        self.noise_checkbox.toggled.connect(self.on_noise_params_changed)
+        self.noise_slider.valueChanged.connect(self.on_noise_slider_changed)
+
     def on_hackrf_toggled(self, checked):
-        if checked:
-            if self.recorded_signal_checkbox.isChecked():
-                self.recorded_signal_checkbox.blockSignals(True)
-                self.recorded_signal_checkbox.setChecked(False)
-                self.recorded_signal_checkbox.blockSignals(False)
+        if checked and self.recorded_signal_checkbox.isChecked():
+            self.recorded_signal_checkbox.blockSignals(True)
+            self.recorded_signal_checkbox.setChecked(False)
+            self.recorded_signal_checkbox.blockSignals(False)
 
     def on_recorded_toggled(self, checked):
-        if checked:
-            if self.hackrf_checkbox.isChecked():
-                self.hackrf_checkbox.blockSignals(True)
-                self.hackrf_checkbox.setChecked(False)
-                self.hackrf_checkbox.blockSignals(False)
+        if checked and self.hackrf_checkbox.isChecked():
+            self.hackrf_checkbox.blockSignals(True)
+            self.hackrf_checkbox.setChecked(False)
+            self.hackrf_checkbox.blockSignals(False)
 
     def select_recorded_signal_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Выбрать папку с записанным сигналом")
         if folder:
             logger.info(f"Папка с записанным сигналом: {folder}")
-            # Дополнительная логика для использования выбранного пути
 
     def select_record_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Выбрать папку для записи сигнала")
@@ -222,32 +253,36 @@ class ControlsWidget(QWidget):
 
     def toggle_recording(self):
         if self.recording:
-            # Останавливаем запись
             self.recording = False
             self.toggle_recording_button.setText("Начать запись")
             logger.info("Запись остановлена")
         else:
-            # Запускаем запись: сбрасываем счётчик для новой сессии
             self.record_count = 0
             self.recording_count_label.setText("Количество записей: 0")
             self.recording = True
             self.toggle_recording_button.setText("Остановить запись")
             logger.info("Запись запущена")
 
+    def on_noise_slider_changed(self, value):
+        self.noise_value_label.setText(f"{value} дБ")
+        self.emit_noise_params_changed()
+
+    def on_noise_params_changed(self, checked=None):
+        # Если аргумент не передан (например, при изменении слайдера), берем текущее состояние чекбокса
+        self.emit_noise_params_changed()
+
+    def emit_noise_params_changed(self):
+        self.noise_params_changed.emit(self.noise_checkbox.isChecked(), float(self.noise_slider.value()))
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Создаем виджет элементов управления
         self.controls_widget = ControlsWidget()
-
-        # Создаем виджет спектрограммы, передавая ссылку на ControlsWidget
         self.spectrogram_widget = SpectrogramWidget(self.controls_widget)
-        # Задаем растягивающийся размер для спектрограммы
         self.spectrogram_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Объединяем виджеты в основной layout с указанием stretch-фактора
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.controls_widget, 0)
         main_layout.addWidget(self.spectrogram_widget, 1)
@@ -256,11 +291,13 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
-        # Инициализация HackRFSweeper и подключение сигналов
         self.sweeper = HackRFSweeper()
         self.sweeper.sweeper_stopped_signal.connect(lambda: QApplication.instance().quit())
         self.sweeper.data_ready_signal.connect(self.spectrogram_widget.worker.process_requested)
         self.sweeper.start()
+
+        # Соединяем сигнал изменения параметров шума с методом обновления в рабочем объекте
+        self.controls_widget.noise_params_changed.connect(self.spectrogram_widget.worker.set_noise_params)
 
     def closeEvent(self, event):
         self.sweeper.stop()
