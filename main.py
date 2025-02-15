@@ -131,22 +131,20 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPu
 #         QMessageBox.information(self, "Task Complete", "The spectrogram has been generated!")
 
 def main():
+    logger.error("test")
     app = QApplication(sys.argv)
     sweeper = HackRFSweeper()
     sweeper.sweeper_stopped_signal.connect(lambda: QApplication.instance().quit())
     window = MainWindow(sweeper)
     window.show()
     sweeper.start()
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     result = app.exec_()
-    profiler.disable()
-    profiler.dump_stats('qt_app_profile.prof')
+    # profiler.disable()
+    # profiler.dump_stats('qt_app_profile.prof')
     sys.exit(result)
 
-def test():
-    a = 1
-    a += 1
 
 if __name__ == '__main__':
     # app = QApplication(sys.argv)

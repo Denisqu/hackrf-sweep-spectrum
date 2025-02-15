@@ -3,7 +3,9 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PyQt5.QtCore import pyqtSlot
+from PyQt5.QtCore import pyqtSlot, QThread
+
+from utils.logger import logger
 
 class SpectrogramWidget(QWidget):
     def __init__(self, parent=None):
@@ -20,6 +22,7 @@ class SpectrogramWidget(QWidget):
 
     @pyqtSlot(object)
     def handle_data_ready(self, buffer):
+        logger.info(f'started handling data_ready_signal from thread {QThread.currentThread()}')
         all_frequencies = []
         all_dbs = []
         try:
@@ -51,9 +54,12 @@ class SpectrogramWidget(QWidget):
             
             self.update_plot()
         except Exception as e:
-            print(f"Error processing data: {e}")
+            logger.error(f"Error processing data: {e}")
+        logger.info(f'stopped handling data_ready_signal from thread {QThread.currentThread()}')
+
 
     def update_plot(self):
+        logger.info(f'started handling update_plot from thread {QThread.currentThread()}')
         self.axes.clear()
         if not self.data:
             return
@@ -88,6 +94,7 @@ class SpectrogramWidget(QWidget):
         self.axes.set_xlabel('Time (samples)')
         self.axes.set_ylabel('Frequency (MHz)')
         self.canvas.draw()
+        logger.info(f'stopped handling update_plot from thread {QThread.currentThread()}')
 
 class MainWindow(QMainWindow):
     def __init__(self, sweeper):

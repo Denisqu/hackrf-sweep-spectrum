@@ -4,6 +4,8 @@ from blinker import Signal
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal, QMetaObject, QObject, Qt, pyqtSlot
 
+from time import sleep
+
 ########### PUBLIC ###########
 
 class HackRFSweeper(QObject):
@@ -58,9 +60,7 @@ class _HackRFSweeperImpl(QObject):
     
     @pyqtSlot()
     def parse_sweeps(self):
-        
-        while self.i < 1:
-            self.i += 1
+        while True:
             for line in self.process.stdout:
                 line = line.strip()
                 if "," in line:
@@ -84,9 +84,10 @@ class _HackRFSweeperImpl(QObject):
                             continue
 
                         if hz_low_val == int(self.current_ranges_mhz[0]) * 1e6 and len(self._current_buffer) > 0:
-                            self.data_ready_signal.emit(self._current_buffer)                                
+                            logger.info(f'started emitting data_ready_signal from thread {QThread.currentThread()}')
+                            self.data_ready_signal.emit(self._current_buffer)
+                            logger.info(f'ended emitting data_ready_signal from thread {QThread.currentThread()}')                                
                             self._current_buffer = []
-                            break
                         self._current_buffer.append((date_time, hz_low_val, hz_high_val, hz_bin_width_val, dbs_val))
         self.stop_signal.emit()
 
