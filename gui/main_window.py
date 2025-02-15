@@ -54,13 +54,12 @@ class SpectrogramWorker(QObject):
                         # Находим индексы частот, попадающие в диапазон (в МГц)
                         indices = np.where((freqs_mhz >= min_freq) & (freqs_mhz <= max_freq))[0]
                         if indices.size > 0:
-                            # Генерируем гауссов шум с центром -67.5 дБ и std=1, затем обрезаем значения в диапазоне [-70, -65]
+                            # Генерируем гауссов шум с центром -68 дБ и std=3, для подавления сигнала
                             filtered_noise = np.random.normal(-68, 3.0, size=(data_array.shape[0], len(indices)))
                             data_array[:, indices] = filtered_noise
 
                 # Применяем глобальный гауссов шум, если он включён
                 if self.add_noise:
-                    # Здесь noise_db интерпретируется как среднее значение шума, а стандартное отклонение фиксировано (например, 5)
                     noise = np.random.normal(self.noise_db, 5, size=data_array.shape)
                     data_array = data_array + noise
 
@@ -194,15 +193,15 @@ class SpectrogramWidget(QWidget):
             self.canvas.draw()
 
             # Если запись включена, сохраняем только спектр (без осей и легенды)
-            if self.controls_widget.recording and self.controls_widget.record_folder:
+            if self.controls_widget.recording and self.controls_widget.session_record_folder:
                 temp_fig = Figure(figsize=self.figure.get_size_inches(), dpi=self.figure.get_dpi())
                 temp_ax = temp_fig.add_axes([0, 0, 1, 1])
                 temp_ax.pcolormesh(X, Y, data, shading='auto', cmap='inferno',
                                    rasterized=True, vmin=-70, vmax=0)
                 temp_ax.set_axis_off()
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                filename = f"mesh_{timestamp}.png"
-                filepath = os.path.join(self.controls_widget.record_folder, filename)
+                # Используем порядковый номер в сессии записи
+                filename = f"{self.controls_widget.record_count}.png"
+                filepath = os.path.join(self.controls_widget.session_record_folder, filename)
                 try:
                     temp_fig.savefig(filepath, bbox_inches='tight', pad_inches=0)
                     logger.info(f"Сохранён mesh в: {filepath}")
@@ -230,7 +229,7 @@ class ControlsWidget(QWidget):
         self.hackrf_checkbox.setChecked(True)
 
         self.choose_recorded_folder_button = QPushButton("Выбрать папку с записанным сигналом")
-        self.choose_record_folder_button = QPushButton("Выбрать папку для записи сигнала")
+        self.choose_record_folder_button = QPushButton("Выбрать базовую папку для записи сигнала")
         self.recording_count_label = QLabel("Количество записей: 0")
         self.toggle_recording_button = QPushButton("Начать запись")
 
@@ -250,7 +249,9 @@ class ControlsWidget(QWidget):
         # Локальные переменные для логики записи
         self.recording = False
         self.record_count = 0
-        self.record_folder = None
+        # Для записи пользователь выбирает базовую папку; для каждой сессии создаётся своя подпапка
+        self.base_record_folder = None
+        self.session_record_folder = None
 
         # Компоновка элементов управления в layout
         layout = QHBoxLayout()
@@ -304,29 +305,48 @@ class ControlsWidget(QWidget):
             logger.info(f"Папка с записанным сигналом: {folder}")
 
     def select_record_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Выбрать папку для записи сигнала")
+        folder = QFileDialog.getExistingDirectory(self, "Выбрать базовую папку для записи сигнала")
         if folder:
-            self.record_folder = folder
-            logger.info(f"Папка для записи сигнала: {folder}")
+            self.base_record_folder = folder
+            logger.info(f"Базовая папка для записи сигнала: {folder}")
 
     def toggle_recording(self):
         if self.recording:
             self.recording = False
             self.toggle_recording_button.setText("Начать запись")
             logger.info("Запись остановлена")
+            self.session_record_folder = None
         else:
+            if not self.base_record_folder:
+                logger.error("Базовая папка для записи не выбрана!")
+                return
             self.record_count = 0
             self.recording_count_label.setText("Количество записей: 0")
             self.recording = True
             self.toggle_recording_button.setText("Остановить запись")
+            # Создаём папку для сессии записи с зашифрованными параметрами
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            noise_enabled = "noiseOn" if self.noise_checkbox.isChecked() else "noiseOff"
+            noise_power = str(self.noise_slider.value())
+            filter_enabled = "filterOn" if self.filter_checkbox.isChecked() else "filterOff"
+            filters_value = self.filter_lineedit.text().replace(" ", "") or "none"
+            # Заменяем недопустимые символы для Windows (например, ':' -> '-')
+            filters_value = filters_value.replace(":", "-").replace("/", "-").replace("\\", "-")
+            session_folder_name = f"{timestamp}_{noise_enabled}_{noise_power}_{filter_enabled}_{filters_value}"
+            self.session_record_folder = os.path.join(self.base_record_folder, session_folder_name)
+            try:
+                os.makedirs(self.session_record_folder, exist_ok=True)
+                logger.info(f"Создана папка для сессии записи: {self.session_record_folder}")
+            except Exception as e:
+                logger.error(f"Ошибка при создании папки для сессии записи: {e}")
             logger.info("Запись запущена")
+
 
     def on_noise_slider_changed(self, value):
         self.noise_value_label.setText(f"{value} дБ")
         self.emit_noise_params_changed()
 
     def on_noise_params_changed(self, checked=None):
-        # Если аргумент не передан (например, при изменении слайдера), берём текущее состояние чекбокса
         self.emit_noise_params_changed()
 
     def emit_noise_params_changed(self):
