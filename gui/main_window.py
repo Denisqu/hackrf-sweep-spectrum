@@ -3,8 +3,9 @@ import os
 import datetime
 import numpy as np
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
-    QCheckBox, QPushButton, QLabel, QFileDialog, QSizePolicy, QSlider, QLineEdit
+    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget,
+    QCheckBox, QPushButton, QLabel, QFileDialog, QSizePolicy, QSlider, QLineEdit,
+    QGroupBox, QSpacerItem, QSizePolicy
 )
 from PyQt5.QtCore import pyqtSlot, pyqtSignal, QThread, QObject, QTimer, Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -40,21 +41,17 @@ def load_model(model_path: str, num_classes: int, device: torch.device) -> nn.Mo
     model = model.to(device)
     return model
 
-# New InferenceWorker class for ML inference in a separate thread
+# InferenceWorker для выполнения ML-инференса в отдельном потоке
 class InferenceWorker(QObject):
-    inference_result = pyqtSignal(list)  # Signal to emit inference probabilities
+    inference_result = pyqtSignal(list)  # Сигнал для передачи результатов инференса
 
     def __init__(self):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # Load the model (assumes the path exists)
-        # C:/git-repos/hackrf-ml/best_model_initial_epoch_5.pth
-        # C:/git-repos/hackrf-ml/best_model_finetune.pth
-        self.model = load_model("C:/git-repos/hackrf-ml/best_model_initial_epoch_5.pth", num_classes=2, device=self.device)
+        self.model = load_model("C:/git-repos/hackrf-ml/22_02_2025_22_33_basemodel_epoch_2.model", num_classes=2, device=self.device)
         self.model.eval()
-        # Define transformations matching the model's training setup
         self.transform = transforms.Compose([
-            transforms.Resize((480, 1550)),  # Match img_height, img_width from ML code
+            transforms.Resize((480, 1550)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -62,21 +59,17 @@ class InferenceWorker(QObject):
     @pyqtSlot(bytes)
     def perform_inference(self, image_bytes):
         try:
-            # Load and preprocess the image from bytes
             image = Image.open(BytesIO(image_bytes)).convert('RGB')
             image = self.transform(image)
-            image = image.unsqueeze(0).to(self.device)  # Add batch dimension
-
-            # Perform inference
+            image = image.unsqueeze(0).to(self.device)
             with torch.no_grad():
                 outputs = self.model(image)
-                probs = torch.softmax(outputs, dim=1)[0].cpu().numpy()  # Convert logits to probabilities
-
-            # Emit the probabilities (list of 2 floats for 'noise' and 'drone')
+                probs = torch.softmax(outputs, dim=1)[0].cpu().numpy()
+            logger.info(f"inference result: {probs.tolist()}")
             self.inference_result.emit(probs.tolist())
         except Exception as e:
             logger.error(f"Error during inference: {e}")
-            self.inference_result.emit([])  # Emit empty list on error
+            self.inference_result.emit([])
 
 class SpectrogramWorker(QObject):
     plot_ready = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # X, Y, data, freq_edges
@@ -171,7 +164,7 @@ class SpectrogramWorker(QObject):
                 logger.error(f"Ошибка при парсинге фильтров: {e}")
 
 class SpectrogramWidget(QWidget):
-    inference_requested = pyqtSignal(bytes)  # Signal to request inference
+    inference_requested = pyqtSignal(bytes)  # Сигнал для запроса инференса
 
     def __init__(self, controls_widget, parent=None):
         super().__init__(parent)
@@ -183,9 +176,9 @@ class SpectrogramWidget(QWidget):
         self.layout.addWidget(self.canvas)
         self.colorbar = None
         self.plot_data_buffer = []
-        self.inference_counter = 0  # Counter for inference triggering
+        self.inference_counter = 0  # Счётчик для триггера инференса
 
-        # Spectrogram worker setup (unchanged)
+        # Настройка SpectrogramWorker в отдельном потоке
         self.worker_thread = QThread()
         self.worker_thread.setObjectName("SpectrogramWorkerThread")
         self.worker = SpectrogramWorker()
@@ -193,18 +186,18 @@ class SpectrogramWidget(QWidget):
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.start()
 
-        # Inference worker setup
+        # Настройка InferenceWorker в отдельном потоке
         self.inference_thread = QThread()
         self.inference_thread.setObjectName("InferenceWorkerThread")
         self.inference_worker = InferenceWorker()
         self.inference_worker.moveToThread(self.inference_thread)
         self.inference_thread.start()
 
-        # Connect inference signals
+        # Подключение сигналов инференса
         self.inference_requested.connect(self.inference_worker.perform_inference)
         self.inference_worker.inference_result.connect(self.controls_widget.update_ml_probabilities)
 
-        # Timer setup (unchanged)
+        # Настройка таймера
         self.timer = QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self._on_timer_timeout)
@@ -225,19 +218,19 @@ class SpectrogramWidget(QWidget):
                 self.colorbar = self.figure.colorbar(mesh, ax=self.axes)
             else:
                 self.colorbar.update_normal(mesh)
-            self.axes.set_xlabel('Frequency (MHz)')
-            self.axes.set_ylabel('Time (samples)')
+            self.axes.set_xlabel('Частота (МГц)')
+            self.axes.set_ylabel('Время (образцы)')
             self.axes.invert_yaxis()
             self.canvas.draw()
 
-            # Always create temp_fig when there is data
+            # Создание временной фигуры для сохранения спектрограммы
             temp_fig = Figure(figsize=self.figure.get_size_inches(), dpi=self.figure.get_dpi())
             temp_ax = temp_fig.add_axes([0, 0, 1, 1])
             temp_ax.pcolormesh(X, Y, data, shading='auto', cmap='inferno',
                                rasterized=True, vmin=-70, vmax=0)
             temp_ax.set_axis_off()
 
-            # Save the spectrogram if recording is enabled
+            # Сохранение спектрограммы при включённой записи
             if self.controls_widget.recording and self.controls_widget.session_record_folder:
                 filename = f"{self.controls_widget.record_count}.png"
                 filepath = os.path.join(self.controls_widget.session_record_folder, filename)
@@ -251,7 +244,7 @@ class SpectrogramWidget(QWidget):
                 except Exception as e:
                     logger.error(f"Ошибка сохранения mesh: {e}")
 
-            # Trigger inference every fourth time
+            # Запуск инференса каждые 4 обновления
             self.inference_counter += 1
             if self.inference_counter % 4 == 0:
                 buf = BytesIO()
@@ -260,7 +253,7 @@ class SpectrogramWidget(QWidget):
                 image_bytes = buf.getvalue()
                 self.inference_requested.emit(image_bytes)
 
-            temp_fig.clf()  # Clean up the temporary figure
+            temp_fig.clf()  # Очистка временной фигуры
 
 class ControlsWidget(QWidget):
     noise_params_changed = pyqtSignal(bool, float)
@@ -268,46 +261,74 @@ class ControlsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # Группа "Источник сигнала"
+        self.signal_source_group = QGroupBox("Источник сигнала")
         self.hackrf_checkbox = QCheckBox("Использовать HackRF")
-        self.recorded_signal_checkbox = QCheckBox("Использовать записанный сигнал")
         self.hackrf_checkbox.setChecked(True)
+        self.hackrf_checkbox.setToolTip("Использовать устройство HackRF для получения сигнала")
+        self.recorded_signal_checkbox = QCheckBox("Использовать записанный сигнал")
+        self.recorded_signal_checkbox.setToolTip("Использовать заранее записанный сигнал")
         self.choose_recorded_folder_button = QPushButton("Выбрать папку с записанным сигналом")
-        self.choose_record_folder_button = QPushButton("Выбрать базовую папку для записи сигнала")
-        self.recording_count_label = QLabel("Количество записей: 0")
+        self.choose_recorded_folder_button.setToolTip("Выбрать папку с файлом записанного сигнала")
+        signal_layout = QVBoxLayout()
+        signal_layout.addWidget(self.hackrf_checkbox)
+        signal_layout.addWidget(self.recorded_signal_checkbox)
+        signal_layout.addWidget(self.choose_recorded_folder_button)
+        self.signal_source_group.setLayout(signal_layout)
+
+        # Группа "Опции записи"
+        self.recording_group = QGroupBox("Опции записи")
+        self.choose_record_folder_button = QPushButton("Выбрать папку для записи сигнала")
+        self.choose_record_folder_button.setToolTip("Выбрать базовую папку для записи")
         self.toggle_recording_button = QPushButton("Начать запись")
+        self.toggle_recording_button.setToolTip("Начать/Остановить запись спектрограмм")
+        self.recording_count_label = QLabel("Количество записей: 0")
+        recording_layout = QHBoxLayout()
+        recording_layout.addWidget(self.choose_record_folder_button)
+        recording_layout.addWidget(self.toggle_recording_button)
+        recording_layout.addWidget(self.recording_count_label)
+        self.recording_group.setLayout(recording_layout)
+
+        # Группа "Обработка сигнала"
+        self.processing_group = QGroupBox("Обработка сигнала")
         self.noise_checkbox = QCheckBox("Добавить гауссов шум")
+        self.noise_checkbox.setToolTip("Добавить гауссов шум к сигналу")
         self.noise_slider = QSlider(Qt.Horizontal)
         self.noise_slider.setMinimum(0)
         self.noise_slider.setMaximum(50)
         self.noise_slider.setValue(10)
         self.noise_value_label = QLabel("10 дБ")
         self.filter_checkbox = QCheckBox("Использовать фильтры")
+        self.filter_checkbox.setToolTip("Применить фильтрацию по диапазонам")
         self.filter_lineedit = QLineEdit()
         self.filter_lineedit.setPlaceholderText("[min_freq0:max_freq0],[min_freq1:max_freq1]")
+        filter_layout = QGridLayout()
+        filter_layout.addWidget(self.noise_checkbox, 0, 0)
+        filter_layout.addWidget(self.noise_slider, 0, 1)
+        filter_layout.addWidget(self.noise_value_label, 0, 2)
+        filter_layout.addWidget(self.filter_checkbox, 1, 0)
+        filter_layout.addWidget(self.filter_lineedit, 1, 1, 1, 2)
+        self.processing_group.setLayout(filter_layout)
 
-        # New label for ML probabilities
+        # Группа "ML Вывод"
+        self.ml_group = QGroupBox("ML Вывод")
         self.ml_probabilities_label = QLabel("ML Probabilities: N/A")
+        ml_layout = QHBoxLayout()
+        ml_layout.addWidget(self.ml_probabilities_label)
+        self.ml_group.setLayout(ml_layout)
 
-        self.recording = False
-        self.record_count = 0
-        self.base_record_folder = None
-        self.session_record_folder = None
+        # Основной вертикальный layout для всех групп
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.signal_source_group)
+        main_layout.addWidget(self.recording_group)
+        main_layout.addWidget(self.processing_group)
+        main_layout.addWidget(self.ml_group)
+        # Добавляем spacer для растяжения
+        main_layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        self.setLayout(main_layout)
 
-        layout = QHBoxLayout()
-        layout.addWidget(self.hackrf_checkbox)
-        layout.addWidget(self.recorded_signal_checkbox)
-        layout.addWidget(self.choose_recorded_folder_button)
-        layout.addWidget(self.choose_record_folder_button)
-        layout.addWidget(self.recording_count_label)
-        layout.addWidget(self.toggle_recording_button)
-        layout.addWidget(self.noise_checkbox)
-        layout.addWidget(self.noise_slider)
-        layout.addWidget(self.noise_value_label)
-        layout.addWidget(self.filter_checkbox)
-        layout.addWidget(self.filter_lineedit)
-        layout.addWidget(self.ml_probabilities_label)  # Add the new label to the layout
-        self.setLayout(layout)
-
+        # Подключение сигналов и слотов
         self.hackrf_checkbox.toggled.connect(self.on_hackrf_toggled)
         self.recorded_signal_checkbox.toggled.connect(self.on_recorded_toggled)
         self.choose_recorded_folder_button.clicked.connect(self.select_recorded_signal_folder)
@@ -318,11 +339,15 @@ class ControlsWidget(QWidget):
         self.filter_checkbox.toggled.connect(self.on_filter_params_changed)
         self.filter_lineedit.textChanged.connect(self.on_filter_params_changed)
 
+        self.recording = False
+        self.record_count = 0
+        self.base_record_folder = None
+        self.session_record_folder = None
+
     @pyqtSlot(list)
     def update_ml_probabilities(self, probs):
-        """Update the ML probabilities label with inference results."""
         if len(probs) == 2:
-            text = f"ML Probabilities: Drone={probs[0]:.2f}, Noise={probs[1]:.2f}"
+            text = f"ML Probabilities: Drone={probs[1]:.2f}, Noise={probs[0]:.2f}"
         else:
             text = "ML Probabilities: N/A"
         self.ml_probabilities_label.setText(text)
@@ -398,6 +423,7 @@ class ControlsWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("Spectrogram & ML Interface")
         self.controls_widget = ControlsWidget()
         self.spectrogram_widget = SpectrogramWidget(self.controls_widget)
         self.spectrogram_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -407,12 +433,17 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
         self.sweeper = HackRFSweeper()
         self.sweeper.sweeper_stopped_signal.connect(lambda: QApplication.instance().quit())
         self.sweeper.data_ready_signal.connect(self.spectrogram_widget.worker.process_requested)
         self.sweeper.start()
+
         self.controls_widget.noise_params_changed.connect(self.spectrogram_widget.worker.set_noise_params)
         self.controls_widget.filter_params_changed.connect(self.spectrogram_widget.worker.set_filter_params)
+
+        # Добавление строки состояния для отображения сообщений
+        self.statusBar().showMessage("Приложение запущено")
 
     def closeEvent(self, event):
         self.sweeper.stop()
@@ -421,5 +452,6 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
+    window.resize(1200, 800)
     window.show()
     sys.exit(app.exec_())
