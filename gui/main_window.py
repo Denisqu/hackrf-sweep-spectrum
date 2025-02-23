@@ -21,18 +21,22 @@ from sweeper.hackrf_sweeper import HackRFSweeper
 
 # Model-related functions from the provided ML code
 def build_model(num_classes: int, device: torch.device) -> nn.Module:
-    model = models.vgg16(pretrained=True)
-    model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-    model.classifier = nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(512, 256),
-        nn.ReLU(inplace=True),
-        nn.Dropout(0.5),
-        nn.Linear(256, num_classes)
-    )
-    model = model.to(device)
-    for param in model.features.parameters():
+    """Загружает предобученную модель MobileNetV3 и модифицирует её."""
+    model = models.mobilenet_v3_large(pretrained=True)
+    
+    # Заморозка всех параметров
+    for param in model.parameters():
         param.requires_grad = False
+    
+    # Адаптация классификационного слоя
+    in_features = model.classifier[-1].in_features
+    model.classifier[-1] = nn.Linear(in_features, num_classes)
+    
+    # Размораживаем classifier
+    for param in model.classifier.parameters():
+        param.requires_grad = True
+    
+    model = model.to(device)
     return model
 
 def load_model(model_path: str, num_classes: int, device: torch.device) -> nn.Module:
@@ -48,10 +52,10 @@ class InferenceWorker(QObject):
     def __init__(self):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = load_model("C:/git-repos/hackrf-ml/22_02_2025_22_33_basemodel_epoch_2.model", num_classes=2, device=self.device)
+        self.model = load_model("C:/git-repos/hackrf-ml/23_02_2025_16_34_finetune_epoch_2.model", num_classes=2, device=self.device)
         self.model.eval()
         self.transform = transforms.Compose([
-            transforms.Resize((480, 1550)),
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
