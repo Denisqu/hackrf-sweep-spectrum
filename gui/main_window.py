@@ -248,9 +248,9 @@ class SpectrogramWidget(QWidget):
                 except Exception as e:
                     logger.error(f"Ошибка сохранения mesh: {e}")
 
-            # Запуск инференса каждые 4 обновления
+            # Запуск инференса каждые 2 обновления
             self.inference_counter += 1
-            if self.inference_counter % 4 == 0:
+            if self.inference_counter % 2 == 0:
                 buf = BytesIO()
                 temp_fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
                 buf.seek(0)
@@ -456,6 +456,5 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(1200, 800)
     window.show()
     sys.exit(app.exec_())
